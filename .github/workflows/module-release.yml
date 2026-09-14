@@ -44,6 +44,8 @@ concurrency:
 
 jobs:
   preflight:
+    # Fork consumes the original author's signed Watcher; it does not publish modules.
+    if: github.repository == 'pardovot/pixinsight-mcp'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.ver.outputs.version }}

@@ -53,6 +53,8 @@ concurrency:
 
 jobs:
   build:
+    # Fork consumes the original author's signed Watcher; it does not publish modules.
+    if: github.repository == 'pardovot/pixinsight-mcp'
     strategy:
       fail-fast: false
       matrix:

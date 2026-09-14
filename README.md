@@ -6,7 +6,39 @@ watch and intervene.
 
 Cross-platform: Windows, macOS and Linux.
 
-## Install
+## This fork: complete script execution
+
+This fork adds `resolve_script`, `run_script_file`, and `get_script_job` to the
+Node MCP server. They locate installed scripts across platforms and run full
+PJSR files through PixInsight 1.9.4's official IPC interface, with parameters,
+completion records, logs, and runtime errors. See [the change summary and usage](docs/script-files.md).
+
+**Keep the original author's PixInsight update repository and signed MCP Watcher.**
+This fork does not publish native modules or claim a Certified PixInsight Developer identity.
+The existing Watcher works with these additions.
+
+To use the additions, build this fork (the upstream npm package does not include them):
+
+```text
+git clone https://github.com/Fluorine7/pixinsight-mcp.git
+cd pixinsight-mcp
+npm ci
+npm run build
+```
+
+Point your MCP client at the built server. For example, in Codex:
+
+```toml
+[mcp_servers.pixinsight]
+command = "node"
+args = ["/absolute/path/to/pixinsight-mcp/build/index.js"]
+```
+
+Use your actual checkout path; on Windows use forward slashes or escaped backslashes
+inside the TOML string. Restart/reconnect the MCP client after configuration.
+For the PixInsight side, keep the update URL shown in step 2 below unchanged.
+
+## Original upstream installation (without fork additions)
 
 **1. MCP server.** Any MCP client works. This is a stock stdio server with no client-specific code.
 
@@ -53,7 +85,7 @@ Requires PixInsight 1.9.4+ (V8 engine), Node 18+, and an MCP client.
 
 ## Tools
 
-24 tools. Bold ones carry the work.
+The upstream tools remain available; this fork adds three script-file tools. Bold ones carry the work.
 
 | Category | Tools |
 |---|---|
@@ -204,3 +236,7 @@ added here.
 ## License
 
 MIT © Alain Escaffre (original work) and pardovot. See [LICENSE](LICENSE).
+
+## Local complete-script extension
+
+See [script file tools](docs/script-files.md) for installation discovery, full PJSR file execution and persistent job status.

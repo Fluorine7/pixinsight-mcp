@@ -7,6 +7,7 @@ import { BridgeClient } from "./bridge/client.js";
 import { discoverInstances } from "./bridge/discover.js";
 import { hasExplicitBridgePin } from "./types.js";
 import { registerImageManagementTools } from "./tools/image-management.js";
+import { registerScriptFileTools } from "./tools/script-files.js";
 import { registerProcessingTools } from "./tools/processing.js";
 import { registerSessionTools } from "./tools/session.js";
 import { registerExportTools } from "./tools/export.js";
@@ -63,6 +64,7 @@ async function main() {
   // Register all tool categories
   registerImageManagementTools(server, bridge);
   registerProcessingTools(server, bridge);
+  registerScriptFileTools(server, bridge);
   registerSessionTools(server, bridge);
   registerExportTools(server, bridge);
   registerMeasurementTools(server, bridge);
