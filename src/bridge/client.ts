@@ -30,6 +30,7 @@ export class BridgeClient {
   private resultsDir!: string;
   private logsDir!: string;
   private revWarned = false;
+  private pending = 0;
 
   constructor(config?: Partial<BridgeConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -44,6 +45,7 @@ export class BridgeClient {
    * between calls is safe.
    */
   setBridgeDir(bridgeDir: string): void {
+    if (this.pending > 0) throw new Error("Cannot switch instance while a command is being submitted or awaited");
     this.config = { ...this.config, bridgeDir };
     const expanded = expandHome(bridgeDir);
     this.commandsDir = join(expanded, "commands");
@@ -72,29 +74,90 @@ export class BridgeClient {
       timeoutMs?: number;
     }
   ): Promise<BridgeResult> {
-    await this.ensureDirectories();
+    this.pending++;
+    try {
+      const id = await this.submitCommand(tool, process, parameters, options);
+      return await this.waitForCommand(id, options?.timeoutMs ?? this.config.defaultTimeoutMs);
+    } finally { this.pending--; }
+  }
 
-    const id = randomUUID();
-    const command: BridgeCommand = {
-      id,
-      timestamp: new Date().toISOString(),
-      tool,
-      process,
-      parameters,
-      executeMethod: options?.executeMethod ?? "executeGlobal",
-      targetView: options?.targetView ?? null,
-    };
+  /** Durable submission; reusing a caller-supplied UUID never executes twice. */
+  async submitCommand(
+    tool: string, process: string, parameters: Record<string, unknown>,
+    options?: { executeMethod?: "executeGlobal" | "executeOn"; targetView?: string | null; commandId?: string }
+  ): Promise<string> {
+    this.pending++;
+    try {
+      const dir = this.getBridgeDir();
+      await this.ensureDirectories();
+      const id = options?.commandId ?? randomUUID();
+      this.validateJobId(id);
+      const command: BridgeCommand = {
+        id, timestamp: new Date().toISOString(), tool, process, parameters,
+        executeMethod: options?.executeMethod ?? "executeGlobal", targetView: options?.targetView ?? null,
+      };
+      const jobs = join(dir, "jobs");
+      await mkdir(jobs, { recursive: true });
+      // mkdir is the cross-client exclusive reservation. A crash before publication
+      // leaves an unknown job, never an invitation to blindly execute it again.
+      try { await mkdir(join(jobs, id)); }
+      catch (err: any) {
+        if (err.code !== "EEXIST") throw err;
+        const previous = JSON.parse(await readFile(join(jobs, id, "command.json"), "utf8"));
+        const stable = (c: BridgeCommand) => JSON.stringify([c.tool, c.process, c.parameters, c.executeMethod, c.targetView]);
+        if (stable(previous) !== stable(command)) throw new Error("commandId already belongs to a different request");
+        return id;
+      }
+      await writeFile(join(jobs, id, "command.json"), JSON.stringify(command), "utf8");
+      const tmp = join(dir, "commands", `${id}.tmp`);
+      await writeFile(tmp, JSON.stringify(command), "utf8");
+      await rename(tmp, join(dir, "commands", `${id}.json`));
+      return id;
+    } finally { this.pending--; }
+  }
 
-    // Atomic write: "<id>.tmp" (outside the watcher's *.json glob) then rename,
-    // so the watcher never picks up a partially written command file.
-    const commandPath = join(this.commandsDir, `${id}.json`);
-    const tmpPath = join(this.commandsDir, `${id}.tmp`);
-    await writeFile(tmpPath, JSON.stringify(command, null, 2), "utf-8");
-    await rename(tmpPath, commandPath);
+  private validateJobId(id: string): void {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))
+      throw new Error("commandId must be a UUID");
+  }
 
-    const timeoutMs = options?.timeoutMs ?? this.config.defaultTimeoutMs;
-    const result = await this.waitForResult(id, timeoutMs);
-    return this.checkHandlersRev(result);
+  /** Query only: no command is sent to PI, including after a server restart. */
+  async getCommandJob(id: string): Promise<any> {
+    this.validateJobId(id);
+    const dir = this.getBridgeDir();
+    const jobDir = join(dir, "jobs", id);
+    const command = JSON.parse(await readFile(join(jobDir, "command.json"), "utf8"));
+    for (const path of [join(jobDir, "result.json"), join(dir, "results", `${id}.json`)]) {
+      try {
+        const result = JSON.parse(await readFile(path, "utf8"));
+        if (!result || result.id !== id || !["running", "success", "error"].includes(result.status))
+          throw new Error("Invalid bridge result envelope");
+        if (result.status !== "running") await this.archiveResult(dir, id, result);
+        return { commandId: id, bridgeDir: dir, command, ...result };
+      } catch (err: any) {
+        if (err.code !== "ENOENT") return { commandId: id, bridgeDir: dir, command, status: "unknown", warning: String(err.message) };
+      }
+    }
+    return { commandId: id, bridgeDir: dir, command,
+      status: existsSync(join(dir, "commands", `${id}.json`)) ? "queued" : "unknown",
+      warning: "No terminal result. Do not resubmit with a new commandId; execution may still be in progress." };
+  }
+
+  private async archiveResult(dir: string, id: string, result: BridgeResult): Promise<void> {
+    const jobDir = join(dir, "jobs", id);
+    if (!existsSync(join(jobDir, "command.json"))) return;
+    const tmp = join(jobDir, `result-${randomUUID()}.tmp`);
+    await writeFile(tmp, JSON.stringify(result), "utf8");
+    await rename(tmp, join(jobDir, "result.json"));
+  }
+
+  async waitForCommand(id: string, timeoutMs: number): Promise<BridgeResult> {
+    this.validateJobId(id);
+    this.pending++;
+    try {
+      const result = await this.waitForResult(id, timeoutMs);
+      return this.checkHandlersRev(result);
+    } finally { this.pending--; }
   }
 
   // Revision skew handling. Only success results carry the marker (error
@@ -151,6 +214,8 @@ export class BridgeClient {
   private async waitForResult(id: string, timeoutMs: number): Promise<BridgeResult> {
     const resultPath = join(this.resultsDir, `${id}.json`);
     const startTime = Date.now();
+    const archived = join(this.getBridgeDir(), "jobs", id, "result.json");
+    if (existsSync(archived)) return JSON.parse(await readFile(archived, "utf8"));
     // When a result file exists but won't parse, it is one of two things:
     //   (a) a partial write we caught mid-flight → transient, retry briefly;
     //   (b) a genuinely malformed result the watcher delivered → permanent.
@@ -177,6 +242,10 @@ export class BridgeClient {
         let result: BridgeResult;
         try {
           result = JSON.parse(data) as BridgeResult;
+          if (!result || result.id !== id || !["running", "success", "error"].includes(result.status) ||
+              (result.status === "error" && typeof result.error?.message !== "string") ||
+              (result.status === "success" && (!result.outputs || typeof result.outputs !== "object")))
+            throw new Error("Invalid result envelope");
         } catch {
           // Unparseable. Tolerate a brief partial-write window; past that, treat
           // it as a delivered-but-malformed result and fail fast, never poll on.
@@ -185,7 +254,7 @@ export class BridgeClient {
             await sleep(this.config.pollIntervalMs);
             continue;
           }
-          try { await unlink(resultPath); } catch {}
+          // Preserve malformed bytes for diagnosis and subsequent job queries.
           return {
             id,
             timestamp: new Date().toISOString(),
@@ -196,7 +265,7 @@ export class BridgeClient {
               message:
                 "The watcher delivered a result that is not valid JSON, the command likely " +
                 "ran but its result was corrupted (e.g. a re-entrant execution). Verify the " +
-                "image state before retrying. Raw result (truncated): " +
+                "image state before retrying. commandId=" + id + ". Raw result (truncated): " +
                 JSON.stringify(data.slice(0, 200)),
               type: "MalformedResult",
             },
@@ -211,6 +280,11 @@ export class BridgeClient {
           continue;
         }
 
+        if (!result || result.id !== id || !["success", "error"].includes(result.status)) {
+          return { id, timestamp: new Date().toISOString(), status: "error", process: "invalid-result",
+            duration_ms: Date.now() - startTime, error: { type: "MalformedResult", message: "Invalid result envelope; verify state before retrying. commandId=" + id } };
+        }
+        await this.archiveResult(this.getBridgeDir(), id, result);
         try { await unlink(resultPath); } catch {}
         return result;
       }
@@ -224,7 +298,7 @@ export class BridgeClient {
       process: "timeout",
       duration_ms: Date.now() - startTime,
       error: {
-        message: `Command timed out after ${timeoutMs}ms. The PJSR watcher may not be running in PixInsight.`,
+        message: `Wait timed out after ${timeoutMs}ms; execution has NOT been cancelled. commandId=${id}. Query get_command_job on this instance; do not blindly retry.`,
         type: "Timeout",
       },
     };
@@ -251,6 +325,8 @@ export class BridgeClient {
       const files = await readdir(this.commandsDir);
       for (const file of files) {
         const filePath = join(this.commandsDir, file);
+        // Tracked commands/results remain queryable; watcher handles command expiry.
+        if (existsSync(join(this.getBridgeDir(), "jobs", file.replace(/\.(json|tmp)$/, "")))) continue;
         if (file.endsWith(".json")) {
           try {
             const data = await readFile(filePath, "utf-8");
@@ -290,6 +366,7 @@ export class BridgeClient {
       for (const file of files) {
         if (!file.endsWith(".json") && !file.endsWith(".tmp")) continue;
         const filePath = join(this.resultsDir, file);
+        if (existsSync(join(this.getBridgeDir(), "jobs", file.replace(/\.(json|tmp)$/, "")))) continue;
         try {
           const { mtimeMs } = await stat(filePath);
           if (Date.now() - mtimeMs > 600_000) {

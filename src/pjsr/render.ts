@@ -1,137 +1,102 @@
-/**
- * render_view, render an open view (optionally cropped/downsampled/stretched) to PNG/JPEG.
- *
- * Verified API facts (probed live 2026-07-24):
- *  - Image.assign() honors the SOURCE's selectedRect → crop happens at copy time, no Crop process;
- *  - Image.render() → Bitmap; Bitmap.save(path[, quality]) writes by extension;
- *  - HistogramTransformation.H rows are [shadows, midtones, highlights, low, high]
- *    (rows 0-2 = R,G,B; row 3 = combined RGB/K);
- *  - View.stf rows are [midtones, shadows, highlights, low, high], midtone FIRST.
- *
- * stf modes:
- *  - "auto": PI's documented autostretch (linked): c0 = med + (-2.8)·1.4826·MAD,
- *    m = mtf(0.25, med − c0), computed on the FULL image so crops share the full-field
- *    stretch. DEGENERATE-MEDIAN CLAMP: a stars-only layer has median≈0, and the naive
- *    formula maps noise to 0.25 (a live-observed blowout). The criterion is RELATIVE
- *    (verified live: linear master med/1.4826MAD ≈ 4.8, star layer ≈ 0.7): if
- *    med < 2·1.4826·MAD the image is mostly empty, fall back to a gentle fixed MTF
- *    (c0=0, m=0.01) and warn. Never judge a star layer on "auto".
- *  - "view": apply the view's own STF (what the GUI shows). Identity STF → warns + asis.
- *  - "asis": no transform (correct for post-stretch images).
- */
-export function renderScript(
-  viewId: string,
-  outputPath: string,
-  stf: "auto" | "asis" | "view",
-  rect?: [number, number, number, number],
-  downsample?: number,
-  quality?: number
-): string {
-  const id = JSON.stringify(viewId);
-  const out = JSON.stringify(outputPath);
-  const rectJs = rect ? JSON.stringify(rect) : "null";
-  const ds = downsample && downsample > 1 ? Math.trunc(downsample) : 0;
-  // Default 100: these are deliverables and review artifacts, not web assets.
-  const q = quality && quality > 0 ? Math.min(100, Math.trunc(quality)) : 100;
-  return `(function(){
-  var sig = function(x){ return (typeof x === "number" && isFinite(x)) ? Number(x.toPrecision(6)) : x; };
-  var v = View.viewById(${id});
-  if (!v || v.isNull) return JSON.stringify({error: "Image not found: " + ${id}});
-  var src = v.image;
-  var warnings = [];
-  var mode = ${JSON.stringify(stf)};
-  var mtf = function(m, x){ if (x <= 0) return 0; if (x >= 1) return 1; return ((m - 1)*x)/(((2*m - 1)*x) - m); };
+import { randomUUID } from "node:crypto";
 
-  // Stretch parameters from the FULL image (crops share the full-field stretch).
-  var htRows = null; // [[c0,m,c1] per HT row index]
-  if (mode === "auto") {
-    var meds = [], mads = [];
-    var nch = Math.min(src.numberOfChannels, 3);
-    for (var c = 0; c < nch; ++c) {
-      src.selectedChannel = c;
-      meds.push(src.median()); mads.push(src.MAD());
-    }
-    src.resetSelections();
-    var med = 0, mad = 0;
-    for (var c = 0; c < nch; ++c) { med += meds[c]/nch; mad += mads[c]/nch; }
-    if (med < 2*1.4826*mad) {
-      warnings.push("degenerate-median (med " + sig(med) + " < 2x1.4826xMAD " + sig(1.4826*mad) + ", mostly-empty layer): autostretch clamped to gentle fixed MTF - prefer stf:'asis' or render the recombined view; never judge a star layer on 'auto'");
-      htRows = { 3: [0, 0.01, 1] };
-    } else {
-      var c0 = Math.max(0, Math.min(1, med - 2.8*1.4826*mad));
-      var m = mtf(0.25, med - c0);
-      htRows = { 3: [c0, m, 1] };
-    }
-  } else if (mode === "view") {
-    var s = v.stf; // rows [m, c0, c1, r0, r1]
-    var identity = true;
-    for (var c = 0; c < 3; ++c)
-      if (Math.abs(s[c][0] - 0.5) > 1e-6 || Math.abs(s[c][1]) > 1e-6 || Math.abs(s[c][2] - 1) > 1e-6) identity = false;
-    if (identity) {
-      warnings.push("view has no STF set - rendering as-is");
-    } else {
-      htRows = { 0: [s[0][1], s[0][0], s[0][2]], 1: [s[1][1], s[1][0], s[1][2]], 2: [s[2][1], s[2][0], s[2][2]] };
-    }
-  }
-
-  // Temp hidden window; assign honors the source selectedRect (crop at copy).
-  var r = ${rectJs};
-  var x0 = 0, y0 = 0, x1 = src.width, y1 = src.height;
-  if (r) {
-    x0 = Math.max(0, Math.min(src.width - 1, Math.round(r[0])));
-    y0 = Math.max(0, Math.min(src.height - 1, Math.round(r[1])));
-    x1 = Math.max(x0 + 1, Math.min(src.width, Math.round(r[2])));
-    y1 = Math.max(y0 + 1, Math.min(src.height, Math.round(r[3])));
-  }
-  var tmpId = "mcp_render_tmp";
-  var ex = ImageWindow.windowById(tmpId);
-  if (!ex.isNull) ex.forceClose();
-  var tw = new ImageWindow(x1 - x0, y1 - y0, src.numberOfChannels, 32, true, src.isColor, tmpId);
-  var tv = tw.mainView;
-  tv.beginProcess();
-  if (r) src.selectedRect = new Rect(x0, y0, x1, y1);
-  tv.image.assign(src);
-  src.resetSelections();
-  tv.endProcess();
-
-  try {
-    if (htRows) {
-      var P = new HistogramTransformation;
-      var H = [[0,0.5,1,0,1],[0,0.5,1,0,1],[0,0.5,1,0,1],[0,0.5,1,0,1],[0,0.5,1,0,1]];
-      for (var row in htRows) {
-        var t = htRows[row];
-        H[row|0] = [t[0], t[1], t[2], 0, 1];
-      }
-      P.H = H;
-      P.executeOn(tv, false);
-    }
-    var dsf = ${ds};
-    if (dsf > 1) {
-      var IR = new IntegerResample;
-      IR.zoomFactor = -dsf;
-      IR.executeOn(tv, false);
-    }
-    var bmp = tv.image.render();
-    bmp.save(${out}, ${q});
-    var ow = tv.image.width, oh = tv.image.height;
-  } finally {
-    tw.forceClose();
-  }
-  return JSON.stringify({ viewId: ${id}, path: ${out}, width: ow, height: oh,
-    stfMode: mode, stfApplied: !!htRows,
-    stretch: htRows ? htRows : null,
-    sourceRect: [x0, y0, x1, y1], downsample: ${ds} || 1,
-    warnings: warnings });
-})()`;
+export type StretchMode = "auto" | "auto-unlinked" | "boosted-unlinked" | "fixed" | "asis" | "view";
+export interface DisplayOptions {
+  referenceViewId?: string;
+  /** HT order: shadows, midtones, highlights, low range, high range. */
+  fixedStretch?: Record<string, number[]>;
+  shadowsClipping?: number;
+  targetBackground?: number;
 }
 
-/** Tiny helper: image dimensions + color flag (used by render_critic_pack for crop layout). */
-export function dimsScript(viewId: string): string {
-  const id = JSON.stringify(viewId);
+export function renderScript(
+  viewId: string, outputPath: string, stf: StretchMode,
+  rect?: [number, number, number, number], downsample?: number, quality?: number,
+  display: DisplayOptions = {}
+): string {
+  if (stf === "fixed" && !display.fixedStretch) throw new Error("fixed mode requires fixedStretch");
+  if (stf !== "fixed" && display.fixedStretch) throw new Error("fixedStretch requires fixed mode");
+  if (display.referenceViewId && !["auto", "auto-unlinked", "boosted-unlinked"].includes(stf))
+    throw new Error("referenceViewId requires an automatic stretch mode");
+  for (const [key, row] of Object.entries(display.fixedStretch ?? {})) {
+    if (!/^[0-3]$/.test(key) || row.length !== 5 || !row.every(Number.isFinite) ||
+        row[0] < 0 || row[2] > 1 || row[0] >= row[2] || row[1] <= 0 || row[1] >= 1 || row[3] > 0 || row[4] < 1)
+      throw new Error("Invalid fixedStretch HT row");
+  }
+  if (display.fixedStretch && !Object.keys(display.fixedStretch).length) throw new Error("Empty fixedStretch");
+  const mode = JSON.stringify(stf), opts = JSON.stringify(display);
+  const tmpId = "mcp_render_" + randomUUID().replace(/-/g, "");
   return `(function(){
-  var v = View.viewById(${id});
-  if (!v || v.isNull) return JSON.stringify({error: "Image not found: " + ${id}});
-  var img = v.image;
-  return JSON.stringify({ viewId: ${id}, width: img.width, height: img.height, isColor: img.isColor, channels: img.numberOfChannels });
-})()`;
+    var v=View.viewById(${JSON.stringify(viewId)});
+    if(!v || v.isNull) return JSON.stringify({error:'Image not found'});
+    var src=v.image, mode=${mode}, opts=${opts}, tw=null, processing=false, warnings=[];
+    function selection(im) { return {rect:new Rect(im.selectedRect),point:new Point(im.selectedPoint),first:im.firstSelectedChannel,last:im.lastSelectedChannel}; }
+    function restore(im,s) { im.selectedRect=s.rect;im.selectedPoint=s.point;im.firstSelectedChannel=s.first;im.lastSelectedChannel=s.last; }
+    var saved=selection(src), ref=null, refSaved=null;
+    var htRows=null, provenance={mode:mode,referenceViewId:opts.referenceViewId || v.id};
+    try {
+      src.resetSelections();
+      if(mode==='fixed') htRows=opts.fixedStretch;
+      else if(mode==='view') {
+        var s=v.stf;htRows={};
+        if(src.isColor) for(var c=0;c<3;++c) htRows[c]=[s[c][1],s[c][0],s[c][2],s[c][3],s[c][4]];
+        else htRows[3]=[s[0][1],s[0][0],s[0][2],s[0][3],s[0][4]];
+        provenance.note='Uses stored view STF, regardless of GUI STF enable state';
+      } else if(mode!=='asis') {
+        ref=opts.referenceViewId?View.viewById(opts.referenceViewId):v;
+        if(!ref || ref.isNull) throw new Error('STF reference view not found');
+        if(ref.image.isColor!==src.isColor || ref.image.width!==src.width || ref.image.height!==src.height)
+          throw new Error('STF reference geometry/color must match target');
+        refSaved=selection(ref.image);ref.image.resetSelections();
+        var linked=mode==='auto', nch=ref.image.isColor?3:1, meds=[],mads=[];
+        var clip=opts.shadowsClipping===undefined?(mode==='boosted-unlinked'?-1.8:-2.8):opts.shadowsClipping;
+        var target=opts.targetBackground===undefined?(mode==='boosted-unlinked'?0.5:0.25):opts.targetBackground;
+        for(var c=0;c<nch;++c) { ref.image.selectedChannel=c;meds.push(ref.image.median());mads.push(ref.image.MAD()); }
+        function mtf(m,x) { if(x<=0)return 0;if(x>=1)return 1;return ((m-1)*x)/((2*m-1)*x-m); }
+        function row(med,mad) {
+          if(med>=0.5) throw new Error('Automatic diagnostic stretch requires a non-inverted linear image (median < 0.5)');
+          if(mad<=0 && med>0) {warnings.push('zero-MAD channel: unclipped MTF fallback');return [0,mtf(target,med),1,0,1];}
+          if(med<2*1.4826*mad || med<=0) {warnings.push('degenerate-median: fixed gentle MTF fallback; diagnostic stretch NOT validated');return [0,0.01,1,0,1];}
+          var c0=Math.max(0,Math.min(1,med+clip*1.4826*mad));
+          return [c0,Math.max(1e-12,Math.min(1-1e-12,mtf(target,(med-c0)/(1-c0)))),1,0,1];
+        }
+        htRows={};
+        if(linked) {
+          var med=0,mad=0;for(var c=0;c<nch;++c){med+=meds[c]/nch;mad+=mads[c]/nch;}htRows[3]=row(med,mad);
+        } else for(var c=0;c<nch;++c) htRows[nch===1?3:c]=row(meds[c],mads[c]);
+        provenance.linked=linked;provenance.shadowsClipping=clip;provenance.targetBackground=target;
+        provenance.algorithm='Median / 1.4826 MAD, normalized MTF';
+        provenance.boostSource=mode==='boosted-unlinked'?'DSCProcessingSuite Boost defaults (-1.8 sigma / 0.5); not native toolbar preference verification':null;
+        provenance.channelMedians=meds;provenance.channelMADs=mads;
+      }
+      var r=${JSON.stringify(rect ?? null)}, x0=0,y0=0,x1=src.width,y1=src.height;
+      if(r) {x0=Math.max(0,Math.min(src.width-1,Math.round(r[0])));y0=Math.max(0,Math.min(src.height-1,Math.round(r[1])));
+        x1=Math.max(x0+1,Math.min(src.width,Math.round(r[2])));y1=Math.max(y0+1,Math.min(src.height,Math.round(r[3])));}
+      src.resetSelections();src.selectedRect=new Rect(x0,y0,x1,y1);
+      tw=new ImageWindow(x1-x0,y1-y0,src.numberOfChannels,32,true,src.isColor,${JSON.stringify(tmpId)});
+      var tv=tw.mainView;tv.beginProcess();processing=true;
+      try { tv.image.assign(src); } finally { tv.endProcess();processing=false; }
+      if(htRows) {
+        var P=new HistogramTransformation;P.H=[[0,.5,1,0,1],[0,.5,1,0,1],[0,.5,1,0,1],[0,.5,1,0,1],[0,.5,1,0,1]];
+        var H=P.H;for(var k in htRows) H[Number(k)]=htRows[k];P.H=H;
+        if(!P.executeOn(tv,false)) throw new Error('Render stretch failed');
+      }
+      var ds=${Math.max(1, Math.trunc(downsample ?? 1))};
+      if(ds>1) {var IR=new IntegerResample;IR.zoomFactor=-ds;if(!IR.executeOn(tv,false))throw new Error('Render resample failed');}
+      tv.image.render().save(${JSON.stringify(outputPath)},${quality ?? 100});
+      return JSON.stringify({viewId:v.id,path:${JSON.stringify(outputPath)},width:tv.image.width,height:tv.image.height,
+        stfMode:mode,stfApplied:!!htRows,stretch:htRows,display:provenance,sourceRect:[x0,y0,x1,y1],downsample:ds,
+        colorManagement:{status:'unverified',outputICCEmbedded:false,note:'Bitmap export has no verified ICC conversion; use for spatial diagnostics, not cross-app color approval.'},warnings:warnings});
+    } catch(e) { return JSON.stringify({error:String(e.message || e)}); }
+    finally {
+      try {if(ref && refSaved) restore(ref.image,refSaved);} finally {
+        try {restore(src,saved);} finally {if(tw && !tw.isNull) {if(processing)tw.mainView.endProcess();tw.forceClose();}}
+      }
+    }
+  })()`;
+}
+
+export function dimsScript(viewId: string): string {
+  return `(function(){var v=View.viewById(${JSON.stringify(viewId)});if(!v||v.isNull)return JSON.stringify({error:'Image not found'});
+    return JSON.stringify({viewId:v.id,width:v.image.width,height:v.image.height,isColor:v.image.isColor,channels:v.image.numberOfChannels});})()`;
 }

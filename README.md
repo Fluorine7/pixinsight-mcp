@@ -22,6 +22,12 @@
 
 验证情况：84 项自动测试通过；macOS PixInsight 1.9.4 已实测完整脚本启动、参数传递、日志和异常回传。Windows/Linux 路径行为经过单元测试，尚未实测运行；本次更新尚未重新验证成功的天文解析。详细用法和限制见[脚本执行说明（英文）](docs/script-files.md)。
 
+### 执行可靠性与验收增强（2026-09-15）
+
+新增 `get_command_job`，普通处理支持异步提交、超时后查询及同 UUID 防重复执行；返回真实参数、历史变化和可选全像素对比。历史导出同时保留实时参数 JSON，并修正原生序列化的数值精度。渲染增加解锁 Boost、固定逐通道对照及临时窗口保护。
+
+这些增强通过现有签名 Watcher 工作，无需重编译原生模块。构建后重新连接 MCP 客户端生效。接口用法、测试范围和 ICC/重放限制见[执行与验收说明](docs/reliability-and-review.md)。
+
 ### 安装本 fork
 
 需要 PixInsight 1.9.4+（V8 引擎）、Node.js 18+ 和支持 MCP 的客户端。
@@ -93,7 +99,7 @@ Windows 客户端若无法解析 `npx`，可设置 `"command": "cmd"`，参数�
 
 | 分类 | 工具 |
 |---|---|
-| 处理执行 | `run_process`、`get_process_parameters`、`run_script` |
+| 处理执行 | `run_process`、`get_command_job`、`get_process_parameters`、`run_script` |
 | 完整脚本 | `resolve_script`、`run_script_file`、`get_script_job` |
 | 图像管理 | `list_open_images`、`open_image`、`save_image`、`close_image`、`get_image_statistics` |
 | 测量 | `get_noise`、`get_background_gradient`、`get_background_neutrality`、`get_star_metrics`、`get_structure_color` |

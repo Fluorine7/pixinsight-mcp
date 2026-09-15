@@ -1,3 +1,5 @@
+import { historyStateScript } from "../pjsr/process-state.js";
+import { execPjsrJson, jsonContent, jsonErrorContent } from "../pjsr/exec.js";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { BridgeClient } from "../bridge/client.js";
@@ -59,14 +61,14 @@ export function registerSessionTools(server: McpServer, bridge: BridgeClient): v
     {
       viewId: z.string().describe("View ID (an open image's main view)"),
       maxParamLines: z.number().int().min(1).max(200).default(12)
-        .describe("Max settings lines shown per step before truncating"),
+        .describe("Deprecated compatibility option: full live values are returned without truncation"),
     },
     async ({ viewId, maxParamLines }) => {
-      const result = await bridge.sendCommand("get_full_history", "__internal__", { viewId, maxParamLines });
-      if (result.status === "error") return errorContent(result.error.message);
-      return {
-        content: [{ type: "text" as const, text: (result as any).message ?? "No history." }],
-      };
+      try {
+        const history = await execPjsrJson(bridge, historyStateScript(viewId));
+        // Full runtime values are returned; maxParamLines is retained for API compatibility.
+        return jsonContent(history);
+      } catch (err) { return jsonErrorContent(err); }
     }
   );
 

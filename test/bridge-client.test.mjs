@@ -202,3 +202,38 @@ test("cleanStaleCommands: reaps orphaned results (post-timeout leftovers) by mti
   assert.equal(cleaned, 2);
   assert.deepEqual((await fs.readdir(results)).sort(), ["fresh.json"]);
 });
+
+test('durable command: timeout, restart, late result and same-ID retry execute once', async t => {
+  const {client, commands, results} = await freshBridge(t);
+  const id = await client.submitCommand('run_script','__script__',{code:'1'});
+  const cmd = await nextCommand(commands);
+  const timed = await client.waitForCommand(id, 30);
+  assert.equal(timed.error.type, 'Timeout');
+  assert.match(timed.error.message, new RegExp(id));
+  assert.equal((await client.getCommandJob(id)).status, 'queued');
+  await fs.rm(path.join(commands, id+'.json'));
+  await writeResult(results, cmd, { status:'running' });
+  assert.equal((await client.getCommandJob(id)).status, 'running');
+  await writeResult(results, cmd, { message:'late success' });
+  const restarted = new BridgeClient({bridgeDir:client.getBridgeDir(),pollIntervalMs:10});
+  assert.equal((await restarted.getCommandJob(id)).status, 'success');
+  await fs.rm(path.join(results,id+'.json'));
+  assert.equal((await restarted.getCommandJob(id)).message, 'late success');
+  assert.equal(await restarted.submitCommand('run_script','__script__',{code:'1'},{commandId:id}),id);
+  assert.deepEqual(await fs.readdir(commands), []);
+  await assert.rejects(restarted.submitCommand('run_script','__script__',{code:'2'},{commandId:id}),/different request/);
+});
+
+test('instance switching is refused while waiting; results remain on original instance', async t => {
+  const {client,commands,results} = await freshBridge(t);
+  const pending = client.sendCommand('ping','__test__',{});
+  const cmd = await nextCommand(commands);
+  assert.throws(()=>client.setBridgeDir('/tmp/other-instance'),/Cannot switch/);
+  await writeResult(results,cmd);
+  assert.equal((await pending).status,'success');
+});
+
+test('job IDs cannot traverse directories', async t => {
+  const {client} = await freshBridge(t);
+  await assert.rejects(client.getCommandJob('../../file'),/UUID/);
+});

@@ -1,6 +1,7 @@
+import { verifiedProcessScript } from "../pjsr/process-state.js";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { BridgeClient } from "../bridge/client.js";
+import { BridgeClient } from "../bridge/client.js";
 import {
   checkProcessCall,
   deadParamsFor,
@@ -13,7 +14,7 @@ import {
 function processResult(result: any, successMsg: string) {
   if (result.status === "error") {
     return {
-      content: [{ type: "text" as const, text: `Error: ${result.error.message}` }],
+      content: [{ type: "text" as const, text: JSON.stringify(result) }],
       isError: true,
     };
   }
@@ -24,6 +25,17 @@ function processResult(result: any, successMsg: string) {
 }
 
 export function registerProcessingTools(server: McpServer, bridge: BridgeClient): void {
+  server.tool("get_command_job", "Query a durable bridge command on the active instance, including after a wait timeout or server restart. Never resubmits it.",
+    { commandId: z.string().uuid() }, async ({ commandId }) => {
+      try {
+        const job = await bridge.getCommandJob(commandId);
+        if (job.outputs?.returnValue) {
+          try { job.execution = JSON.parse(job.outputs.returnValue); } catch {}
+        }
+        return { content: [{ type: "text" as const, text: JSON.stringify(job, null, 2) }],
+          isError: job.status === "error" || job.execution?.status === "error" };
+      } catch (e) { return { content: [{ type: "text" as const, text: String(e) }], isError: true }; }
+    });
 
   // run_pixelmath was removed as an MCP tool 2026-07-26: a per-process wrapper
   // (the anti-pattern) with a restricted parameter set (no symbols/rescale/...).
@@ -43,15 +55,18 @@ export function registerProcessingTools(server: McpServer, bridge: BridgeClient)
       "you configure output. E.g. AutomaticBackgroundExtractor defaults to targetCorrection=0 " +
       "(no correction), to actually correct the image pass { targetCorrection: 1, replaceTarget: true }.\n" +
       "3. Pick settings from measuring THIS image (get_image_statistics / run_script), not fixed defaults.\n" +
-      "4. After running, ALWAYS re-measure. If stats are byte-identical to before, it was a no-op, " +
-      "stop and fix the output config; do not build the next step on it.\n" +
+      "4. After running, inspect execution evidence and re-measure. verifyPixels:true checks all target samples; " +
+      "identical summary statistics alone do not prove a no-op. Verify intended outputs before continuing.\n" +
       "Unknown setting names are rejected (checked against get_process_parameters).",
     {
       processId: z.string().describe("Process class name, e.g. 'BlurXTerminator'"),
       viewId: z.string().optional().describe("Target view id (omit for a global process)"),
+      verifyPixels: z.boolean().optional().describe("Compare every target sample before/after (extra full-image copy and scan); reports unchanged pixels without guessing from statistics"),
+      commandId: z.string().uuid().optional().describe("Optional idempotency UUID. Reuse for the identical request after an uncertain response; never generates a second execution."),
+      waitMs: z.number().int().min(0).max(3600000).optional().describe("Wait budget; 0 submits asynchronously. Timeout does not cancel execution."),
       settings: z.record(z.any()).optional().describe("Process parameters as { name: value } (see get_process_parameters)"),
     },
-    async ({ processId, viewId, settings }) => {
+    async ({ processId, viewId, settings, commandId, waitMs, verifyPixels }) => {
       // Verified defects are refused before the call reaches PixInsight. Some of
       // these hang the application, and the no-op ones would otherwise return
       // success with an unchanged image, which is worse than an error.
@@ -63,15 +78,25 @@ export function registerProcessingTools(server: McpServer, bridge: BridgeClient)
         };
       }
 
-      const result = await bridge.sendCommand("run_process", processId, {
-        processId,
-        settings: settings ?? {},
-      }, viewId ? { executeMethod: "executeOn", targetView: viewId } : { executeMethod: "executeGlobal" });
-      const outcome = processResult(result, `${processId} executed${viewId ? ` on **${viewId}**` : " (global)"}`);
-      if (warnings.length > 0 && !outcome.isError) {
-        outcome.content[0].text += formatWarnings(warnings);
+      let submittedId: string | undefined;
+      try {
+        // Freeze the destination for this submission and its wait, even if another
+        // request switches the server's active instance in between awaits.
+        const commandBridge = new BridgeClient(bridge.getConfig());
+        const code = verifiedProcessScript(processId, viewId, settings ?? {}, verifyPixels);
+        const id = await commandBridge.submitCommand("run_script", "__script__", { code }, { commandId });
+        submittedId = id;
+        if (waitMs === 0) return { content: [{ type: "text" as const,
+          text: JSON.stringify({ commandId: id, status: "submitted", bridgeDir: commandBridge.getBridgeDir() }) }] };
+        const result = await commandBridge.waitForCommand(id, waitMs ?? bridge.getConfig().defaultTimeoutMs);
+        if (result.status !== "success") return processResult(result, "");
+        const execution = JSON.parse(String(result.outputs.returnValue));
+        return { content: [{ type: "text" as const,
+          text: JSON.stringify({ commandId: id, bridgeDir: commandBridge.getBridgeDir(), ...execution }, null, 2) + (warnings.length ? formatWarnings(warnings) : "") }],
+          isError: execution.status !== "success" };
+      } catch (err) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: String(err), commandId: submittedId, warning: submittedId ? "Query this job before retrying; execution may have occurred." : undefined }) }], isError: true };
       }
-      return outcome;
     }
   );
 
@@ -86,7 +111,7 @@ export function registerProcessingTools(server: McpServer, bridge: BridgeClient)
     async ({ processId }) => {
       const result = await bridge.sendCommand("get_process_parameters", processId, { processId });
       if (result.status === "error") {
-        return { content: [{ type: "text" as const, text: `Error: ${result.error.message}` }], isError: true };
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }], isError: true };
       }
       const params = (result as any).outputs?.parameters ?? {};
       // Introspection reports dead aliases as ordinary settable parameters, so
