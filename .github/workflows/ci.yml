@@ -13,7 +13,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # Pin standard Intel macOS runners: arm64 capacity can cancel queued jobs.
+        # Apple Silicon is additionally validated locally; see the security review.
+        os: [ubuntu-latest, windows-latest, macos-26-intel]
         node: ["22.23.4", "24.22.1", "26.12.1"]
     runs-on: ${{ matrix.os }}
     steps:

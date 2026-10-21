@@ -159,7 +159,16 @@ advisory; absence of a current npm finding is not a guarantee of no unknown CVEs
 
 ## CI remediation and validation
 
-- Test the three patched minimum runtimes on Linux, macOS and Windows.
+- Test the three patched minimum runtimes on Linux, macOS Intel and Windows.
+  macOS uses the official standard `macos-26-intel` runner. The initial arm64
+  `macos-latest` run passed Node 24.22.1, but Node 22/26 jobs were cancelled
+  before execution: GitHub reported "The job was not acquired by Runner of
+  type hosted even after multiple attempts" and explicit arm64 capacity
+  constraints. A retry remained queued and was cancelled when superseded by
+  this matrix change. No tests were removed or failures ignored. Apple Silicon
+  was separately tested locally on all three Node versions, as recorded below.
+  [Original run](https://github.com/Fluorine7/pixinsight-mcp/actions/runs/39640346593/attempts/1);
+  [standard runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
 - Add a separate `npm run test:security` job (`npm audit --audit-level=low`),
   covering production and development dependencies with no ignored advisories.
 - Upgrade checkout/setup-node/artifact actions to current releases and pin all
