@@ -51,6 +51,9 @@ concurrency:
   group: module-build-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   build:
     # Fork consumes the original author's signed Watcher; it does not publish modules.
@@ -73,17 +76,19 @@ jobs:
       # Release holding the prebuilt PCL libraries. Not a product release.
       PCL_SDK_TAG: pcl-sdk
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 22
+          node-version-file: '.node-version'
 
       - name: Clone PCL SDK
         shell: bash
+        env:
+          PCL_REF: ${{ inputs.pcl_ref }}
         run: |
           git clone --depth 1 https://gitlab.com/pixinsight/PCL.git pcl
-          if [ -n "${{ github.event.inputs.pcl_ref }}" ]; then
-            git -C pcl fetch --depth 1 origin "${{ github.event.inputs.pcl_ref }}"
+          if [ -n "$PCL_REF" ]; then
+            git -C pcl fetch --depth 1 -- origin "$PCL_REF"
             git -C pcl checkout FETCH_HEAD
           fi
           echo "PCL_SHA=$(git -C pcl rev-parse HEAD)" >> "$GITHUB_ENV"
@@ -148,7 +153,7 @@ jobs:
       # from the VS install (config.mjs locates them via vswhere).
       - name: Set up MSVC (Windows)
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: x64
 
@@ -170,9 +175,9 @@ jobs:
 
       # Publish right after PCL builds - BEFORE the module build that might still
       # fail - so a failed run still leaves the SDK cached for the next attempt.
-      # Skipped for fork PRs, whose GITHUB_TOKEN is read-only, they just build it.
+      # PRs only build; publishing cache assets is restricted to trusted non-PR runs.
       - name: Publish prebuilt PCL
-        if: steps.pcl-sdk.outputs.hit != 'true' && github.event.pull_request.head.repo.fork != true
+        if: steps.pcl-sdk.outputs.hit != 'true' && github.event_name != 'pull_request'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -235,7 +240,7 @@ jobs:
 
       - name: Upload module artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: MCPWatcher-pxm-${{ matrix.os }}
           path: module/build/MCPWatcher-pxm.*

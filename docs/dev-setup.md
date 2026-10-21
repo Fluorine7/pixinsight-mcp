@@ -11,7 +11,7 @@ and each one says whether it has actually been run.
 
 ## Prerequisites
 
-- **Node.js** >= 18, installed for the same OS that runs PixInsight.
+- **Node.js** 22.23.4+ (22.x), 24.22.1+ (24.x, recommended LTS), or 26.12.1+ (26.x), installed for the same OS that runs PixInsight.
 - **PixInsight** >= 1.9.4 "Lockhart" (V8 PJSR engine, the watcher enforces this via
   `CoreApplication.ensureMinimumVersion(1, 9, 4)`, older ES5-engine versions are not supported).
 - An MCP client (Claude Code, Claude Desktop, anything that speaks stdio MCP).

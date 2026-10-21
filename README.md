@@ -30,7 +30,7 @@
 
 ### 安装本 fork
 
-需要 PixInsight 1.9.4+（V8 引擎）、Node.js 18+ 和支持 MCP 的客户端。
+需要 PixInsight 1.9.4+（V8 引擎）、Node.js 22.23.4+（22.x）、24.22.1+（24.x，推荐 LTS）或 26.12.1+（26.x），以及支持 MCP 的客户端。最低版本包含 2026-10-21 安全更新；已停止支持的奇数版 Node 不受支持。开发默认版本见 `.node-version`。
 
 **1. 构建 MCP 服务**
 
@@ -295,7 +295,7 @@ Developer identity, so the dialog shows *Verified. Certified developer: OfirPard
 **3. Start it.** `Process > Utilities > MCP Watcher > Start`, then ask your assistant to list your
 open images. If it answers, you are connected.
 
-Requires PixInsight 1.9.4+ (V8 engine), Node 18+, and an MCP client.
+Requires PixInsight 1.9.4+ (V8 engine), Node.js 22.23.4+ (22.x), 24.22.1+ (24.x, recommended LTS), or 26.12.1+ (26.x), and an MCP client. These minimums include the 2026-10-21 security fixes; end-of-life odd-numbered Node releases are unsupported. The development default is in `.node-version`.
 
 ### Tools
 
@@ -362,7 +362,7 @@ a successful astrometric solve has not been re-tested in this update.
 ### Building from source
 
 **Optional for native Watcher developers; not required to use this fork's additions.**
-Needs Node 18+, a C++ toolchain and CMake:
+Needs a supported Node.js version listed above, a C++ toolchain and CMake:
 
 | | Toolchain |
 |---|---|
