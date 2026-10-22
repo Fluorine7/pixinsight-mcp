@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import {renderScript} from '../build/pjsr/render.js';
 
-function fixture({color=true, failAssign=false, failSave=false}={}) {
+function fixture({color=true, failAssign=false, failSave=false, saveFalse=false, failConversion=false, missingProfile=false, disabledCM=false}={}) {
   class Rect {constructor(...v){Object.assign(this,v.length===1?v[0]:{x0:v[0],y0:v[1],x1:v[2],y1:v[3]});}}
   class Point {constructor(p){Object.assign(this,p);}}
   const im={width:100,height:80,numberOfChannels:color?3:1,isColor:color,
@@ -16,14 +16,20 @@ function fixture({color=true, failAssign=false, failSave=false}={}) {
   class ImageWindow {
     constructor(w,h,n,bits,real,isColor,id){
       this.id=id;this.isNull=false;this.closed=false;this.mainView={beginProcess(){},endProcess(){},image:{width:w,height:h,
-        assign(){if(failAssign)throw Error('assign failed');},render(){return {save(){if(failSave)throw Error('save failed');}}}}};made.push(this);
+        assign(source,rect){if(failAssign)throw Error('assign failed');this.width=rect?rect.x1-rect.x0:source.width;this.height=rect?rect.y1-rect.y0:source.height;},
+        cropTo(x0,y0,x1,y1){this.width=x1-x0;this.height=y1-y0;},
+        render(){return {save(){if(failSave)throw Error('save failed');return !saveFalse;}}}}};made.push(this);
     }
     forceClose(){this.closed=true;}
+    saveAs(){return true;}
+    static windowById(id){return made.find(w=>w.id===id)??{isNull:true};}
   }
+  view.window={mainView:view,applyColorTransformation(){if(failConversion)throw Error('conversion failed');}};
   class HistogramTransformation {executeOn(){applied.push(this.H);return true;}}
-  return {im,made,applied,env:{View:{viewById:()=>view},ImageWindow,HistogramTransformation,Rect,Point}};
+  return {im,made,applied,env:{View:{viewById:()=>view},ImageWindow,HistogramTransformation,Rect,Point,
+    File:{readFile:()=>({length:missingProfile?0:560,toBase64:()=> 'fixture-profile'})},Settings:{readGlobal:key=> /IsEnabled|IsValid/.test(key)?!disabledCM:'display-profile',globalVariableType:()=>13}}};
 }
-function run(env,mode='boosted-unlinked',opts={}) {return JSON.parse(vm.runInNewContext(renderScript('v','/tmp/test.png',mode,undefined,undefined,undefined,opts),env));}
+function run(env,mode='boosted-unlinked',opts={}) {return JSON.parse(vm.runInNewContext(renderScript('v','/tmp/test.png',mode,undefined,undefined,undefined,{colorMode:"raw",...opts}),env));}
 
 test('Boost is unlinked, records each row and maps each median to target .5',()=>{
   const {env,im}=fixture();const saved=JSON.stringify([im.selectedRect,im.selectedPoint,im.firstSelectedChannel,im.lastSelectedChannel]);
@@ -48,4 +54,23 @@ for(const failure of ['failAssign','failSave'])test(`render restores source and 
 test('fixed mode rejects invalid rows before contacting PI',()=>{
   assert.throws(()=>renderScript('v','x','fixed'),/requires/);
   assert.throws(()=>renderScript('v','x','fixed',undefined,undefined,undefined,{fixedStretch:{0:[1,.5,0,0,1]}}),/Invalid/);
+});
+test('crop copies the explicit rectangle rather than Image.assign copying the whole source',()=>{
+  const {env}=fixture();
+  const result=JSON.parse(vm.runInNewContext(renderScript('v','/tmp/test.png','asis',[5,6,17,20],undefined,undefined,{colorMode:'raw'}),env));
+  assert.equal(result.width,12);assert.equal(result.height,14);
+});
+test('managed script waits for output embedding and keeps crop dimensions',()=>{
+  const {env,made}=fixture();const result=run(env,'asis',{colorMode:'display'});
+  assert.equal(result.colorManagement.status,'awaiting-embedding');
+  assert.equal(result.colorManagement.outputICCVerified,false);
+  assert.equal(result.width,100);assert.equal(result.height,80);
+  assert.ok(made.every(w=>w.closed));
+});
+for(const failure of ['failConversion','missingProfile','saveFalse','disabledCM'])test(`managed preview fails closed and cleans up on ${failure}`,()=>{
+  const {env,im,made}=fixture({[failure]:true});const saved=JSON.stringify([im.selectedRect,im.firstSelectedChannel,im.lastSelectedChannel]);
+  const result=run(env,'asis',{colorMode:'display'});
+  assert.ok(result.error);assert.equal(result.colorManagement,undefined);
+  assert.equal(JSON.stringify([im.selectedRect,im.firstSelectedChannel,im.lastSelectedChannel]),saved);
+  assert.ok(made.every(w=>w.closed));
 });

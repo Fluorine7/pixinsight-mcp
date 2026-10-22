@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 export type StretchMode = "auto" | "auto-unlinked" | "boosted-unlinked" | "fixed" | "asis" | "view";
 export interface DisplayOptions {
+  colorMode?: "display" | "raw";
   referenceViewId?: string;
   /** HT order: shadows, midtones, highlights, low range, high range. */
   fixedStretch?: Record<string, number[]>;
@@ -73,9 +74,10 @@ export function renderScript(
       if(r) {x0=Math.max(0,Math.min(src.width-1,Math.round(r[0])));y0=Math.max(0,Math.min(src.height-1,Math.round(r[1])));
         x1=Math.max(x0+1,Math.min(src.width,Math.round(r[2])));y1=Math.max(y0+1,Math.min(src.height,Math.round(r[3])));}
       src.resetSelections();src.selectedRect=new Rect(x0,y0,x1,y1);
+      var managed=opts.colorMode!=='raw' && src.isColor;
       tw=new ImageWindow(x1-x0,y1-y0,src.numberOfChannels,32,true,src.isColor,${JSON.stringify(tmpId)});
       var tv=tw.mainView;tv.beginProcess();processing=true;
-      try { tv.image.assign(src); } finally { tv.endProcess();processing=false; }
+      try { tv.image.assign(src,new Rect(x0,y0,x1,y1),0,src.numberOfChannels-1); } finally { tv.endProcess();processing=false; }
       if(htRows) {
         var P=new HistogramTransformation;P.H=[[0,.5,1,0,1],[0,.5,1,0,1],[0,.5,1,0,1],[0,.5,1,0,1],[0,.5,1,0,1]];
         var H=P.H;for(var k in htRows) H[Number(k)]=htRows[k];P.H=H;
@@ -83,10 +85,33 @@ export function renderScript(
       }
       var ds=${Math.max(1, Math.trunc(downsample ?? 1))};
       if(ds>1) {var IR=new IntegerResample;IR.zoomFactor=-ds;if(!IR.executeOn(tv,false))throw new Error('Render resample failed');}
-      tv.image.render().save(${JSON.stringify(outputPath)},${quality ?? 100});
-      return JSON.stringify({viewId:v.id,path:${JSON.stringify(outputPath)},width:tv.image.width,height:tv.image.height,
+      var cm={status:src.isColor?'raw':'grayscale-unmanaged',outputICCEmbedded:false,outputICCVerified:false,
+        note:'Spatial diagnostics only; no verified color conversion.'},iccBase64=null;
+      var bitmap=tv.image.render();
+      if(managed) {
+        function globalSetting(key) {return Settings.readGlobal(key,Settings.globalVariableType(key));}
+        if(globalSetting('ColorManagement/IsEnabled')!==true || globalSetting('ColorManagement/IsValid')!==true)
+          throw new Error('PixInsight color management is disabled or invalid; enable it or request colorMode:raw');
+        var monitorProfile=globalSetting('ColorManagement/MonitorProfilePath');
+        if(!monitorProfile) throw new Error('PixInsight did not report its active monitor profile');
+        var icc=File.readFile(monitorProfile);
+        if(!icc || !icc.length) throw new Error('Cannot read the active PixInsight monitor ICC profile');
+        // Use the ORIGINAL window/view: its live ICC and display transformation
+        // are authoritative. New ImageWindow/PixelMath copies lose source ICC.
+        v.window.applyColorTransformation(bitmap,v);
+        iccBase64=icc.toBase64();
+        cm={status:'awaiting-embedding',outputICCEmbedded:false,outputICCVerified:false,
+          source:'Live source window/view color-management transform',
+          targetProfile:monitorProfile,target:'PixInsight monitor profile',
+          defaultRGBProfile:globalSetting('ColorManagement/DefaultRGBProfilePath'),
+          renderingIntent:globalSetting('ColorManagement/DefaultRenderingIntent'),
+          note:'Display-referred preview tagged with the actual monitor ICC. Use a color-managed viewer. Unlinked/Boost displays remain spatial diagnostics.'};
+      }
+      if(!bitmap.save(${JSON.stringify(outputPath)},${quality ?? 100})) throw new Error('Preview bitmap save failed');
+      var width=tv.image.width,height=tv.image.height;
+      return JSON.stringify({viewId:v.id,path:${JSON.stringify(outputPath)},width:width,height:height,
         stfMode:mode,stfApplied:!!htRows,stretch:htRows,display:provenance,sourceRect:[x0,y0,x1,y1],downsample:ds,
-        colorManagement:{status:'unverified',outputICCEmbedded:false,note:'Bitmap export has no verified ICC conversion; use for spatial diagnostics, not cross-app color approval.'},warnings:warnings});
+        colorManagement:cm,iccBase64:iccBase64,warnings:warnings});
     } catch(e) { return JSON.stringify({error:String(e.message || e)}); }
     finally {
       try {if(ref && refSaved) restore(ref.image,refSaved);} finally {

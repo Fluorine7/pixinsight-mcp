@@ -23,8 +23,8 @@
     "url": "git+https://github.com/pardovot/pixinsight-mcp.git"
   },
   "scripts": {
-    "build": "tsc && node scripts/check-handler-drift.mjs",
-    "test": "tsc && node --test && node scripts/check-handler-drift.mjs",
+    "build": "tsc && node scripts/write-build-info.mjs && node scripts/check-handler-drift.mjs",
+    "test": "npm run build && node --test",
     "test:recipe": "node scripts/smoke-osc-rgb-linear.mjs",
     "library": "node scripts/add-library-entry.mjs",
     "dev": "tsc --watch",

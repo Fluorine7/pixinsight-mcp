@@ -105,10 +105,35 @@ fixed-reference Boost comparisons, while independently calculated Boost remains
 available for diagnosing each image. Supply the same `starsRect` for pairwise
 packs. Manifests record exact crops, scale and display parameters.
 
-Bitmap output has **unverified ICC handling** and reports that explicitly. It is
-suitable for spatial diagnostics, not reliable cross-application SPCC/color
-approval. No ICC conversion or embedding is claimed. All display transforms are
-applied only to temporary copies, never baked into source images.
+RGB output defaults to `colorMode:display`. A Float32 temporary copy receives
+the explicit source crop, display stretch and resampling. The **original source
+window/view** then applies its native `applyColorTransformation` to the rendered
+bitmap. This uses the live source ICC and PixInsight display pipeline. The active
+monitor ICC bytes and global profile path are read from PixInsight at render time.
+A default-profile change is never substituted for an assigned source profile.
+
+PJSR ImageWindow has no supported `iccProfile` property, and PixelMath new images
+do not preserve assigned source ICC; the regression uses a source profile that
+differs from the default to catch this. PI's PNG format cannot embed ICC itself.
+Node embeds the actual monitor profile as PNG iCCP or JPEG APP2 metadata, removes
+conflicting PNG color tags, and reads the written file to verify the profile before
+publishing. `colorManagement.status:managed-display`, `outputICCEmbedded:true` and
+`outputICCVerified:true` are reported only after completion. Missing profiles,
+disabled/invalid global color management, transform failures and write failures
+are errors; an existing output is kept. Neither source images nor global color
+settings are modified.
+
+These are **display-referred previews**, with the gamut/precision and any proofing
+of PI's display pipeline. They are not sRGB or archival master exports. Use a
+color-managed viewer to interpret the embedded monitor profile; this prevents
+viewers from treating monitor RGB values as sRGB or applying the wrong profile.
+
+`render_view.colorMode:raw` deliberately bypasses conversion/embedding. Monochrome
+previews remain `grayscale-unmanaged`; neither is claimed suitable for calibrated
+cross-application color approval. Critic packs use managed RGB previews by default.
+All transformations affect temporary copies. Unlinked/Boost displays still serve
+spatial diagnosis, not SPCC/global-color approval, even with embedded ICC. Display
+agreement also requires a color-managed viewer and a correctly configured monitor.
 
 ## 5. Temporary rendering state
 
@@ -132,3 +157,45 @@ serialization was confirmed to round 0.15 to 0.1 before correction. A live-histo
 XPSM and JSON audit were exported and read back. No astronomical target image was
 processed. Full image replay, Windows/Linux execution, and color-managed bitmap
 export are not verified by these tests.
+
+
+## 6. Running-server diagnostics
+
+Call `get_runtime_info` to inspect Node version/executable, SDK version, server PID,
+start time, package version and build provenance (commit, dirty state, build time
+and unique build ID). `npm run build` captures provenance; it is loaded once at
+process startup. A changed build ID on disk sets `restartRequired:true` without
+misreporting the new checkout as already running. A missing manifest is unknown,
+and a dirty build must not be treated as an exact commit. After updating, restart
+the MCP connection and check again.
+
+The active bridge directory is included even for a custom pinned path. Its
+heartbeat reports the native module version, slot/PID and freshness; a stale
+heartbeat can also mean PI's main thread is busy. `probeWatcher:true` adds a
+read-only script round trip (5-second wait) for actual PI version/build/instance
+and observed versus expected handler revision. Timeout/mismatch is unconfirmed,
+not proof that PI is stopped. No image processing is performed by this probe.
+
+Malformed supported JSON-RPC request envelopes now return `-32602`. Unknown
+methods still return `-32601`; tool argument and execution errors retain MCP tool
+error semantics. The SDK itself is unchanged.
+
+### 2026-10-22 validation
+
+The automated suite covers process-versus-disk provenance, invalid JSON-RPC
+params, ICC container round trips (PNG CRCs/JPEG multi-segment profiles), crop
+geometry, managed failures/cleanup and the existing reliability checks. Actual
+flightcheck: 12 pass, 0 warnings, 0 failures.
+
+`node scripts/smoke-runtime-preview.mjs <evidence-directory>` is an opt-in live
+regression using only owned synthetic windows. On macOS arm64 / PixInsight 1.9.5
+build 1706 it checks the runtime probe, source pixels/history/selections/STF,
+managed PNG/JPEG, raw rendering, crop/downsampling and source-profile correctness.
+Independent Pillow/LittleCMS comparison of eight Adobe RGB color patches against
+the exported monitor-profile PNG matched exactly (maximum 8-bit channel
+difference 0). A second sRGB-tagged
+source is compared with PI’s direct native display reference to detect lost source
+ICC or double conversion; it also matched exactly.
+Windows/Linux CI exercises Node and mocks, not a licensed PixInsight installation.
+The older 1.9.4 validation above predates managed export and does not establish
+managed-export compatibility on that version.
