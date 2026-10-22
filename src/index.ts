@@ -14,6 +14,8 @@ import { registerExportTools } from "./tools/export.js";
 import { registerMeasurementTools } from "./tools/measurement.js";
 import { registerRenderTools } from "./tools/render.js";
 import { registerInstanceTools } from "./tools/instances.js";
+import { registerRuntimeTools } from "./tools/runtime.js";
+import { ValidatedTransport } from "./protocol.js";
 
 // Single version source: package.json (shipped alongside build/ in the npm package).
 const { version } = JSON.parse(
@@ -70,9 +72,10 @@ async function main() {
   registerMeasurementTools(server, bridge);
   registerRenderTools(server, bridge);
   registerInstanceTools(server, bridge);
+  registerRuntimeTools(server, bridge);
 
   // Connect via stdio transport
-  const transport = new StdioServerTransport();
+  const transport = new ValidatedTransport(new StdioServerTransport());
   await server.connect(transport);
 
   // Log to stderr (stdout is reserved for MCP protocol)

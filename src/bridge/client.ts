@@ -30,7 +30,10 @@ export class BridgeClient {
   private resultsDir!: string;
   private logsDir!: string;
   private revWarned = false;
+  private observedHandlersRev: number | null = null;
   private pending = 0;
+
+  getObservedHandlersRev(): number | null { return this.observedHandlersRev; }
 
   constructor(config?: Partial<BridgeConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -46,6 +49,7 @@ export class BridgeClient {
    */
   setBridgeDir(bridgeDir: string): void {
     if (this.pending > 0) throw new Error("Cannot switch instance while a command is being submitted or awaited");
+    this.observedHandlersRev = null;
     this.config = { ...this.config, bridgeDir };
     const expanded = expandHome(bridgeDir);
     this.commandsDir = join(expanded, "commands");
@@ -170,6 +174,7 @@ export class BridgeClient {
   private checkHandlersRev(result: BridgeResult): BridgeResult {
     if (result.status !== "success") return result;
     const rev = (result.outputs as Record<string, unknown>)?.handlersRev;
+    this.observedHandlersRev = typeof rev === "number" && Number.isInteger(rev) ? rev : null;
     if (rev === EXPECTED_HANDLERS_REV) return result;
 
     const reinstall =

@@ -8,7 +8,7 @@
 
 ### 本 fork 新增的功能
 
-本 fork 基于 [pardovot/pixinsight-mcp](https://github.com/pardovot/pixinsight-mcp)，为 Node MCP 服务增加三个工具：
+本 fork 基于 [pardovot/pixinsight-mcp](https://github.com/pardovot/pixinsight-mcp)，为 Node MCP 服务增加完整脚本执行工具：
 
 | 工具 | 功能 |
 |---|---|
@@ -27,6 +27,12 @@
 新增 `get_command_job`，普通处理支持异步提交、超时后查询及同 UUID 防重复执行；返回真实参数、历史变化和可选全像素对比。历史导出同时保留实时参数 JSON，并修正原生序列化的数值精度。渲染增加解锁 Boost、固定逐通道对照及临时窗口保护。
 
 这些增强通过现有签名 Watcher 工作，无需重编译原生模块。构建后重新连接 MCP 客户端生效。接口用法、测试范围和 ICC/重放限制见[执行与验收说明](docs/reliability-and-review.md)。
+
+### 运行自检与颜色预览（2026-10-22）
+
+`get_runtime_info` 报告当前进程的 Node、SDK、构建提交及活动实例；加 `probeWatcher:true` 可读取真实 PixInsight 版本和 Watcher 协议修订号。更新磁盘构建后，旧进程会报告 `restartRequired:true`。
+
+RGB 的 `render_view` 和评审图包默认调用源视图的原生显示色彩转换，并嵌入、回读验证实际显示器 ICC。`colorMode:raw` 用于未经色彩转换的空间诊断；单色预览仍明确标记为未管理颜色。Boost/解锁通道显示用于空间检查，不能作为整体颜色标定的验收依据。全部转换发生在临时副本；详见[自检与预览说明](docs/reliability-and-review.md)。
 
 ### 安装本 fork
 
@@ -67,7 +73,7 @@ https://raw.githubusercontent.com/pardovot/pixinsight-mcp/dist/
 
 ### 只安装原版 MCP
 
-上游 npm 包不包含本 fork 新增的三个工具。如果只需原版，可使用：
+上游 npm 包不包含本 fork 的新增功能。如果只需原版，可使用：
 
 ```bash
 claude mcp add pixinsight -- npx -y @pardovot/pixinsight-mcp
@@ -105,7 +111,7 @@ Windows 客户端若无法解析 `npx`，可设置 `"command": "cmd"`，参数�
 | 测量 | `get_noise`、`get_background_gradient`、`get_background_neutrality`、`get_star_metrics`、`get_structure_color` |
 | 渲染 | `render_view`、`render_critic_pack` |
 | 历史与备份 | `get_history`、`get_full_history`、`undo`、`redo`、`snapshot`、`restore` |
-| 实例 | `list_instances`、`use_instance` |
+| 实例与自检 | `list_instances`、`use_instance`、`get_runtime_info` |
 | 导出 | `export_container` |
 
 `run_process` 按类名调用已安装的处理工具，也支持第三方工具。新增处理工具通常无需增加专用 MCP 封装。
@@ -252,6 +258,12 @@ Use your actual checkout path; on Windows use forward slashes or escaped backsla
 inside the TOML string. Restart/reconnect the MCP client after configuration.
 For the PixInsight side, keep the update URL shown in step 2 below unchanged.
 
+### Runtime diagnostics and color previews
+
+`get_runtime_info` reports the running Node/SDK/build, active bridge and whether a newer build on disk needs a restart. Set `probeWatcher:true` for a bounded read-only round trip reporting the actual PixInsight version and Watcher handler revision.
+
+RGB previews and critic packs now apply the source view’s native PixInsight display transform, embed the actual monitor ICC in PNG/JPEG, and verify it from the output file. These are display-referred previews. `render_view.colorMode:raw` preserves unmanaged diagnostic output; grayscale is explicitly unmanaged. Unlinked/Boost views remain spatial diagnostics. See [runtime, display and validation details](docs/reliability-and-review.md).
+
 ### Original upstream installation (without fork additions)
 
 **1. MCP server.** Any MCP client works. This is a stock stdio server with no client-specific code.
@@ -309,7 +321,7 @@ The upstream tools remain available; this fork adds three script-file tools. Bol
 | Measurement | **`get_noise`**, **`get_background_gradient`**, `get_background_neutrality`, **`get_star_metrics`**, `get_structure_color` |
 | Rendering | **`render_view`**, **`render_critic_pack`** |
 | History | `get_history`, `get_full_history`, `undo`, `redo`, `snapshot`, `restore` |
-| Instances | `list_instances`, `use_instance` |
+| Instances and runtime | `list_instances`, `use_instance`, `get_runtime_info` |
 | Export | `export_container` |
 
 `run_process` runs **any** process by class name, including third-party ones you have installed,

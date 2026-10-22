@@ -4,7 +4,8 @@ import { join } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { BridgeClient } from "../bridge/client.js";
 import { execPjsrJson, jsonContent, jsonErrorContent } from "../pjsr/exec.js";
-import { renderScript, dimsScript, type StretchMode, type DisplayOptions } from "../pjsr/render.js";
+import { dimsScript, type DisplayOptions } from "../pjsr/render.js";
+import { renderToFile } from "../preview/render.js";
 import { noiseScript } from "../pjsr/measure-noise.js";
 import { gradientScript } from "../pjsr/measure-gradient.js";
 import { neutralityScript } from "../pjsr/measure-neutrality.js";
@@ -25,9 +26,11 @@ export function registerRenderTools(server: McpServer, bridge: BridgeClient): vo
       "clamps + warns on a degenerate median (never judge a stars-only layer on 'auto'). " +
       "stf:'asis' = no transform (post-stretch images). stf:'view' = the view's own GUI STF. " +
       "boosted-unlinked computes each RGB channel independently (-1.8 sigma, target 0.5); fixed reuses returned HT rows. " +
-      "rect = [x0,y0,x1,y1] source crop at 1:1; downsample = integer reduction factor.",
+      "rect = [x0,y0,x1,y1] source crop at 1:1; downsample = integer reduction factor. " +
+      "RGB previews default to native PI display colors with verified embedded monitor ICC. colorMode:raw skips color management for diagnostics; monochrome remains unmanaged. Source pixels/history are preserved.",
     {
       viewId: z.string().describe("View ID to render"),
+      colorMode: z.enum(["display", "raw"]).default("display"),
       outputPath: z.string().describe("Absolute output path (.png or .jpg)"),
       stf: z.enum(["auto", "auto-unlinked", "boosted-unlinked", "fixed", "asis", "view"]).default("auto").describe("Stretch mode for the render"),
       referenceViewId: z.string().optional().describe("Compute automatic STF from this same-geometry reference view"),
@@ -39,10 +42,10 @@ export function registerRenderTools(server: McpServer, bridge: BridgeClient): vo
       downsample: z.number().int().min(1).max(16).optional().describe("Integer downsample factor"),
       quality: z.number().int().min(10).max(100).optional().describe("JPEG quality, default 100 (ignored for PNG)"),
     },
-    async ({ viewId, outputPath, stf, rect, downsample, quality, referenceViewId, fixedStretch, shadowsClipping, targetBackground }) => {
+    async ({ viewId, outputPath, stf, rect, downsample, quality, referenceViewId, fixedStretch, shadowsClipping, targetBackground, colorMode }) => {
       try {
         return jsonContent(
-          await execPjsrJson(bridge, renderScript(viewId, outputPath, stf, rect, downsample, quality, { referenceViewId, fixedStretch, shadowsClipping, targetBackground }))
+          await renderToFile(bridge, viewId, outputPath, stf, rect, downsample, quality, { referenceViewId, fixedStretch, shadowsClipping, targetBackground, colorMode })
         );
       } catch (err) {
         return jsonErrorContent(err);
@@ -98,10 +101,7 @@ export async function generateCriticPack(
   const renders: Record<string, any> = {};
   let frozen: DisplayOptions | undefined;
   const render = async (name: string, rect?: [number, number, number, number], downsample?: number) => {
-    renders[name] = await execPjsrJson(
-      bridge,
-      renderScript(viewId, join(outputDir, name), frozen ? "fixed" : stf, rect, downsample, undefined, frozen ?? { referenceViewId })
-    );
+    renders[name] = await renderToFile(bridge, viewId, join(outputDir, name), frozen ? "fixed" : stf, rect, downsample, undefined, frozen ?? { referenceViewId });
   };
 
   // Full field, ~1500px long edge.
@@ -155,22 +155,22 @@ export async function generateCriticPack(
   if (phase === "linear") {
     // Independently calculated diagnostic Boost plus a frozen reference comparison.
     const originals = Object.entries(renders);
-    const boost = await execPjsrJson(bridge, renderScript(viewId, join(outputDir, "boost-full.png"), "boosted-unlinked",
-      undefined, Math.max(1, Math.ceil(Math.max(W, H) / 1500))));
+    const boost = await renderToFile(bridge, viewId, join(outputDir, "boost-full.png"), "boosted-unlinked",
+      undefined, Math.max(1, Math.ceil(Math.max(W, H) / 1500)));
     renders["boost-full.png"] = boost;
     for (const [name, manifest] of originals) {
       if (name === "full.png") continue;
-      renders["boost-" + name] = await execPjsrJson(bridge, renderScript(viewId, join(outputDir, "boost-" + name), "fixed",
-        manifest.sourceRect, manifest.downsample, undefined, { fixedStretch: boost.stretch }));
+      renders["boost-" + name] = await renderToFile(bridge, viewId, join(outputDir, "boost-" + name), "fixed",
+        manifest.sourceRect, manifest.downsample, undefined, { fixedStretch: boost.stretch });
     }
     if (referenceViewId) {
-      const comparison = await execPjsrJson(bridge, renderScript(viewId, join(outputDir, "comparison-boost-full.png"),
-        "boosted-unlinked", undefined, Math.max(1, Math.ceil(Math.max(W,H)/1500)), undefined, { referenceViewId }));
+      const comparison = await renderToFile(bridge, viewId, join(outputDir, "comparison-boost-full.png"),
+        "boosted-unlinked", undefined, Math.max(1, Math.ceil(Math.max(W,H)/1500)), undefined, { referenceViewId });
       renders["comparison-boost-full.png"] = comparison;
       for (const [name, manifest] of originals) {
         if (name === "full.png") continue;
-        renders["comparison-boost-" + name] = await execPjsrJson(bridge, renderScript(viewId, join(outputDir, "comparison-boost-" + name),
-          "fixed", manifest.sourceRect, manifest.downsample, undefined, { fixedStretch: comparison.stretch }));
+        renders["comparison-boost-" + name] = await renderToFile(bridge, viewId, join(outputDir, "comparison-boost-" + name),
+          "fixed", manifest.sourceRect, manifest.downsample, undefined, { fixedStretch: comparison.stretch });
       }
     }
   }
